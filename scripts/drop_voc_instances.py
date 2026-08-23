@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create class-balanced, instance-dropped PASCAL VOC annotations.
+"""Create priority-constrained, instance-dropped PASCAL VOC annotations.
 
 Only annotations listed in ImageSets/Main/train.txt are modified. Every source
 annotation is first copied to a separate output directory, so validation and
@@ -9,13 +9,13 @@ test annotations remain byte-for-byte identical to the originals.
 from __future__ import annotations
 
 import argparse
-import math
+import heapq
 import random
 import shutil
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import DefaultDict, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -30,67 +30,80 @@ class Annotation:
 
 
 class Edge:
-    __slots__ = ("to", "reverse", "capacity", "initial_capacity")
+    __slots__ = ("to", "reverse", "capacity", "initial_capacity", "cost")
 
-    def __init__(self, to: int, reverse: int, capacity: int) -> None:
+    def __init__(self, to: int, reverse: int, capacity: int, cost: int) -> None:
         self.to = to
         self.reverse = reverse
         self.capacity = capacity
         self.initial_capacity = capacity
+        self.cost = cost
 
 
-class Dinic:
-    """Small integer max-flow implementation used for constrained sampling."""
+class MinCostFlow:
+    """Successive-shortest-path flow with integer costs and capacities."""
 
     def __init__(self, node_count: int) -> None:
         self.graph: List[List[Edge]] = [[] for _ in range(node_count)]
 
-    def add_edge(self, source: int, target: int, capacity: int) -> Edge:
-        forward = Edge(target, len(self.graph[target]), capacity)
-        backward = Edge(source, len(self.graph[source]), 0)
+    def add_edge(self, source: int, target: int, capacity: int, cost: int = 0) -> Edge:
+        forward = Edge(target, len(self.graph[target]), capacity, cost)
+        backward = Edge(source, len(self.graph[source]), 0, -cost)
         self.graph[source].append(forward)
         self.graph[target].append(backward)
         return forward
 
-    def max_flow(self, source: int, sink: int) -> int:
-        total_flow = 0
+    def send(self, source: int, sink: int, requested_flow: int) -> int:
         node_count = len(self.graph)
+        potential = [0] * node_count
+        total_flow = 0
+        infinity = 1 << 62
 
-        while True:
-            level = [-1] * node_count
-            level[source] = 0
-            queue = deque([source])
+        while total_flow < requested_flow:
+            distance = [infinity] * node_count
+            previous_node = [-1] * node_count
+            previous_edge = [-1] * node_count
+            distance[source] = 0
+            queue: List[Tuple[int, int]] = [(0, source)]
+
             while queue:
-                node = queue.popleft()
-                for edge in self.graph[node]:
-                    if edge.capacity > 0 and level[edge.to] < 0:
-                        level[edge.to] = level[node] + 1
-                        queue.append(edge.to)
-            if level[sink] < 0:
-                return total_flow
+                current_distance, node = heapq.heappop(queue)
+                if current_distance != distance[node]:
+                    continue
+                for edge_index, edge in enumerate(self.graph[node]):
+                    if edge.capacity <= 0:
+                        continue
+                    reduced_cost = edge.cost + potential[node] - potential[edge.to]
+                    candidate = current_distance + reduced_cost
+                    if candidate < distance[edge.to]:
+                        distance[edge.to] = candidate
+                        previous_node[edge.to] = node
+                        previous_edge[edge.to] = edge_index
+                        heapq.heappush(queue, (candidate, edge.to))
 
-            next_edge = [0] * node_count
+            if distance[sink] == infinity:
+                break
+            for node, value in enumerate(distance):
+                if value != infinity:
+                    potential[node] += value
 
-            def send(node: int, amount: int) -> int:
-                if node == sink:
-                    return amount
-                while next_edge[node] < len(self.graph[node]):
-                    edge = self.graph[node][next_edge[node]]
-                    if edge.capacity > 0 and level[node] + 1 == level[edge.to]:
-                        pushed = send(edge.to, min(amount, edge.capacity))
-                        if pushed:
-                            edge.capacity -= pushed
-                            reverse = self.graph[edge.to][edge.reverse]
-                            reverse.capacity += pushed
-                            return pushed
-                    next_edge[node] += 1
-                return 0
+            pushed = requested_flow - total_flow
+            node = sink
+            while node != source:
+                parent = previous_node[node]
+                edge = self.graph[parent][previous_edge[node]]
+                pushed = min(pushed, edge.capacity)
+                node = parent
+            node = sink
+            while node != source:
+                parent = previous_node[node]
+                edge = self.graph[parent][previous_edge[node]]
+                edge.capacity -= pushed
+                self.graph[node][edge.reverse].capacity += pushed
+                node = parent
+            total_flow += pushed
 
-            while True:
-                pushed = send(source, 1 << 60)
-                if not pushed:
-                    break
-                total_flow += pushed
+        return total_flow
 
 
 def read_split(path: Path) -> List[str]:
@@ -131,21 +144,17 @@ def load_train_annotations(annotation_dir: Path, image_ids: Sequence[str]) -> Di
     return annotations
 
 
-def quotas_for_ratio(class_totals: Mapping[str, int], ratio: float) -> Dict[str, int]:
-    return {
-        class_name: int(math.floor(total * ratio + 1e-12))
-        for class_name, total in class_totals.items()
-    }
-
-
-def make_flow_plan(
-    quotas: Mapping[str, int],
+def make_priority_flow_plan(
+    class_totals: Mapping[str, int],
+    requested_ratio: float,
+    requested_drop_count: int,
     pair_instances: Mapping[Tuple[str, str], Sequence[int]],
     image_capacities: Mapping[str, int],
     seed: int,
 ) -> Tuple[int, Dict[Tuple[str, str], int]]:
+    """Meet the global count first, then minimize squared class-rate error."""
     rng = random.Random(seed)
-    classes = list(quotas)
+    classes = list(class_totals)
     images = list(image_capacities)
     rng.shuffle(classes)
     rng.shuffle(images)
@@ -155,10 +164,22 @@ def make_flow_plan(
     image_offset = 1 + len(classes)
     image_node = {name: image_offset + index for index, name in enumerate(images)}
     sink = image_offset + len(images)
-    network = Dinic(sink + 1)
+    network = MinCostFlow(sink + 1)
 
+    # Each unit edge carries the marginal increase in squared deviation from
+    # the requested class rate. A common offset makes all initial costs
+    # non-negative without changing the optimum for a fixed total flow.
+    cost_scale = 1_000_000_000
+    cost_offset = cost_scale + 1
     for class_name in classes:
-        network.add_edge(source, class_node[class_name], quotas[class_name])
+        total = class_totals[class_name]
+        for dropped_count in range(1, total + 1):
+            previous_error = ((dropped_count - 1) / total - requested_ratio) ** 2
+            next_error = (dropped_count / total - requested_ratio) ** 2
+            marginal_cost = round((next_error - previous_error) * cost_scale)
+            network.add_edge(
+                source, class_node[class_name], 1, marginal_cost + cost_offset
+            )
 
     tracked_edges: Dict[Tuple[str, str], Edge] = {}
     pairs_by_class: DefaultDict[str, List[Tuple[str, str]]] = defaultdict(list)
@@ -176,51 +197,13 @@ def make_flow_plan(
     for image_id in images:
         network.add_edge(image_node[image_id], sink, image_capacities[image_id])
 
-    flow = network.max_flow(source, sink)
+    flow = network.send(source, sink, requested_drop_count)
     plan = {
         pair: edge.initial_capacity - edge.capacity
         for pair, edge in tracked_edges.items()
         if edge.initial_capacity != edge.capacity
     }
     return flow, plan
-
-
-def find_balanced_quotas(
-    class_totals: Mapping[str, int],
-    requested_ratio: float,
-    pair_instances: Mapping[Tuple[str, str], Sequence[int]],
-    image_capacities: Mapping[str, int],
-    seed: int,
-) -> Tuple[Dict[str, int], float, bool]:
-    requested_quotas = quotas_for_ratio(class_totals, requested_ratio)
-    requested_flow, _ = make_flow_plan(
-        requested_quotas, pair_instances, image_capacities, seed
-    )
-    if requested_flow == sum(requested_quotas.values()):
-        return requested_quotas, requested_ratio, True
-
-    candidate_rates = {0.0}
-    for class_name, total in class_totals.items():
-        for count in range(1, requested_quotas[class_name] + 1):
-            candidate_rates.add(count / total)
-    rates = sorted(rate for rate in candidate_rates if rate <= requested_ratio + 1e-12)
-
-    low, high = 0, len(rates) - 1
-    best_rate = 0.0
-    best_quotas = quotas_for_ratio(class_totals, 0.0)
-    while low <= high:
-        middle = (low + high) // 2
-        ratio = rates[middle]
-        quotas = quotas_for_ratio(class_totals, ratio)
-        flow, _ = make_flow_plan(quotas, pair_instances, image_capacities, seed)
-        if flow == sum(quotas.values()):
-            best_rate = ratio
-            best_quotas = quotas
-            low = middle + 1
-        else:
-            high = middle - 1
-
-    return best_quotas, best_rate, False
 
 
 def validate_split_isolation(voc_root: Path, train_ids: Set[str]) -> Tuple[int, int]:
@@ -304,12 +287,11 @@ def print_statistics(
     output_dir: Path,
     seed: int,
     requested_ratio: float,
-    effective_ratio: float,
+    requested_drop_count: int,
     requested_feasible: bool,
     class_totals: Mapping[str, int],
-    requested_quotas: Mapping[str, int],
-    planned_quotas: Mapping[str, int],
     dropped_counts: Mapping[str, int],
+    maximum_droppable: int,
     train_image_count: int,
     modified_image_count: int,
     val_image_count: int,
@@ -321,8 +303,9 @@ def print_statistics(
     print(f"output directory       : {output_dir}")
     print(f"seed                   : {seed}")
     print(f"requested drop ratio   : {requested_ratio:.6f}")
-    print(f"balanced target ratio  : {effective_ratio:.6f}")
+    print(f"requested drop boxes   : {requested_drop_count}")
     print(f"requested ratio feasible: {'yes' if requested_feasible else 'no (limited by min-1 constraint)'}")
+    print(f"maximum droppable boxes: {maximum_droppable}")
     print(f"train images           : {train_image_count}")
     print(f"modified train images  : {modified_image_count}")
     print(f"unchanged val images   : {val_image_count}")
@@ -332,16 +315,18 @@ def print_statistics(
     print(f"actual overall ratio   : {total_dropped / total_boxes:.6f}")
     print(f"train boxes remaining  : {total_boxes - total_dropped}")
     print()
-    header = f"{'class':<18} {'before':>8} {'requested':>10} {'target':>8} {'dropped':>8} {'actual%':>9} {'remain':>8}"
+    header = f"{'class':<18} {'before':>8} {'ideal':>10} {'dropped':>8} {'actual%':>9} {'delta(pp)':>10} {'remain':>8}"
     print(header)
     print("-" * len(header))
     for class_name in sorted(class_totals):
         before = class_totals[class_name]
         dropped = dropped_counts.get(class_name, 0)
+        actual_percent = 100.0 * dropped / before
+        ideal = before * requested_ratio
         print(
-            f"{class_name:<18} {before:>8} {requested_quotas[class_name]:>10} "
-            f"{planned_quotas[class_name]:>8} {dropped:>8} "
-            f"{100.0 * dropped / before:>8.3f}% {before - dropped:>8}"
+            f"{class_name:<18} {before:>8} {ideal:>10.2f} {dropped:>8} "
+            f"{actual_percent:>8.3f}% {actual_percent - 100.0 * requested_ratio:>+9.3f} "
+            f"{before - dropped:>8}"
         )
 
 
@@ -375,19 +360,23 @@ def run(args: argparse.Namespace) -> Path:
             class_totals[class_name] += 1
             pair_instances[(class_name, image_id)].append(index)
 
-    requested_quotas = quotas_for_ratio(class_totals, args.drop_ratio)
-    planned_quotas, effective_ratio, requested_feasible = find_balanced_quotas(
+    total_boxes = sum(class_totals.values())
+    requested_drop_count = int(total_boxes * args.drop_ratio + 0.5)
+    maximum_droppable = sum(image_capacities.values())
+    flow, pair_drop_counts = make_priority_flow_plan(
         class_totals,
         args.drop_ratio,
+        requested_drop_count,
         pair_instances,
         image_capacities,
         args.seed,
     )
-    flow, pair_drop_counts = make_flow_plan(
-        planned_quotas, pair_instances, image_capacities, args.seed
-    )
-    if flow != sum(planned_quotas.values()):
-        raise AssertionError("Internal error: final class quotas are not feasible")
+    expected_flow = min(requested_drop_count, maximum_droppable)
+    if flow != expected_flow:
+        raise AssertionError(
+            f"Internal error: expected {expected_flow} droppable boxes, planned {flow}"
+        )
+    requested_feasible = flow == requested_drop_count
 
     rng = random.Random(args.seed)
     dropped_indices: DefaultDict[str, Set[int]] = defaultdict(set)
@@ -399,9 +388,8 @@ def run(args: argparse.Namespace) -> Path:
         dropped_indices[image_id].update(selected)
         dropped_counts[class_name] += count
 
-    for class_name, quota in planned_quotas.items():
-        if dropped_counts[class_name] != quota:
-            raise AssertionError(f"Internal error: quota mismatch for {class_name}")
+    if sum(dropped_counts.values()) != flow:
+        raise AssertionError("Internal error: total drop count does not match flow")
     for image_id, indices in dropped_indices.items():
         if len(annotations[image_id].objects) - len(indices) < 1:
             raise AssertionError(f"Internal error: no objects would remain in {image_id}")
@@ -413,12 +401,11 @@ def run(args: argparse.Namespace) -> Path:
         output_dir,
         args.seed,
         args.drop_ratio,
-        effective_ratio,
+        requested_drop_count,
         requested_feasible,
         class_totals,
-        requested_quotas,
-        planned_quotas,
         dropped_counts,
+        maximum_droppable,
         len(train_ids),
         len(dropped_indices),
         val_count,
@@ -430,8 +417,8 @@ def run(args: argparse.Namespace) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Randomly drop class-balanced object instances from PASCAL VOC train "
-            "annotations while retaining at least one object per image."
+            "Randomly drop object instances from PASCAL VOC train annotations, "
+            "prioritizing one object per image, the global ratio, then class balance."
         )
     )
     parser.add_argument(
@@ -444,7 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-ratio",
         type=float,
         required=True,
-        help="Requested per-class instance drop ratio in [0, 1]",
+        help="Requested global train-instance drop ratio in [0, 1]",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
     parser.add_argument(

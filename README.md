@@ -1,17 +1,20 @@
 # PASCAL VOC instance dropping
 
 `scripts/drop_voc_instances.py` creates a separate PASCAL VOC annotation directory
-with class-balanced random bounding-box instance dropping.
+with priority-constrained random bounding-box instance dropping.
 
 ## Behavior
 
 - Reads the training image IDs only from `ImageSets/Main/train.txt`.
 - Copies every original XML into a new directory before changing anything.
 - Keeps validation and test XML files byte-for-byte unchanged.
-- Targets the same drop ratio independently for every class.
-- Uses a max-flow constraint so every training image retains at least one object.
-- If the requested balanced ratio is impossible, uses the largest common feasible
-  ratio and reports the reduction.
+- Applies constraints in this strict priority order:
+  1. Every training image retains at least one object.
+  2. The requested global drop ratio is met to the nearest whole box whenever feasible.
+  3. Class-specific drop rates are made as similar as possible by minimizing their
+     squared deviation from the requested rate.
+- If priority 1 makes the requested global count impossible, drops the maximum
+  feasible number and reports the shortfall.
 - Prints per-class and aggregate statistics after completion.
 
 ## Usage

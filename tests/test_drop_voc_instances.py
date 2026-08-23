@@ -81,8 +81,44 @@ class DropVocInstancesTest(unittest.TestCase):
                 self.assertGreaterEqual(len(classes), 1)
                 remaining.extend(classes)
             original = [name for image_id in ("train1", "train2", "train3") for name in samples[image_id]]
-            self.assertEqual(original.count("cat") - remaining.count("cat"), 1)
+            # 7 * 0.5 rounds to a global target of 4. Class balance is the
+            # tertiary objective, so the best feasible allocation is 2/2.
+            self.assertEqual(original.count("cat") - remaining.count("cat"), 2)
             self.assertEqual(original.count("dog") - remaining.count("dog"), 2)
+
+    def test_global_ratio_has_priority_over_class_balance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            voc_root = Path(temporary) / "VOC2007"
+            annotations = voc_root / "Annotations"
+            main = voc_root / "ImageSets" / "Main"
+            annotations.mkdir(parents=True)
+            main.mkdir(parents=True)
+            write_annotation(annotations / "cat1.xml", ["cat"])
+            write_annotation(annotations / "cat2.xml", ["cat"])
+            write_annotation(annotations / "dogs.xml", ["dog"] * 5)
+            (main / "train.txt").write_text("cat1\ncat2\ndogs\n")
+            (main / "val.txt").write_text("")
+            (main / "test.txt").write_text("")
+            output = voc_root / "Annotations_drop_test"
+
+            run(
+                argparse.Namespace(
+                    voc_root=voc_root,
+                    drop_ratio=0.5,
+                    seed=5,
+                    output_dir=output,
+                    overwrite=False,
+                )
+            )
+
+            # Four of seven boxes must be dropped (nearest integer to 50%),
+            # even though the singleton cat boxes cannot be removed.
+            remaining_count = sum(
+                len(object_classes(output / f"{image_id}.xml"))
+                for image_id in ("cat1", "cat2", "dogs")
+            )
+            self.assertEqual(7 - remaining_count, 4)
+            self.assertEqual(len(object_classes(output / "dogs.xml")), 1)
 
     def test_impossible_ratio_is_reduced_to_keep_one_box_per_image(self):
         with tempfile.TemporaryDirectory() as temporary:
