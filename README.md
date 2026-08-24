@@ -1,5 +1,11 @@
 # PASCAL VOC instance dropping
 
+Install the pinned training dependencies with:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 `scripts/drop_voc_instances.py` creates a separate PASCAL VOC annotation directory
 with priority-constrained random bounding-box instance dropping.
 
@@ -59,4 +65,54 @@ The command refuses to replace an existing output directory unless
 
 ```bash
 python3 -m unittest discover -s tests -v
+```
+
+## Convert VOC XML to PUD-DETR COCO JSON
+
+`scripts/convert_voc_to_coco.py` converts the original VOC XML files and every
+discovered `Annotations_drop_ratio_*` directory to the COCO representation used
+by the reference PUD-DETR annotations.
+
+The converter preserves the official VOC2007 detection splits from
+`ImageSets/Main`: 2,501 train images, 2,510 validation images, and 4,952 test
+images. Within each split, image order follows the split text file and image IDs
+are the numeric JPEG stem (`000012.jpg` becomes `12`). Annotation IDs are
+assigned sequentially from 1 in split and XML object order, which is the rule
+used by the reference converter before its later custom train/validation
+reshuffle. This keeps IDs unique for `pycocotools` and `train_pud_detr.py`.
+
+VOC's 1-based inclusive `(xmin, ymin, xmax, ymax)` coordinates become COCO
+zero-based `[x, y, width, height]`. The output also includes the reference
+rectangle `segmentation`, `area`, `iscrowd`, and `ignore` fields; `ignore` is
+copied from VOC's `difficult` flag. Category IDs are fixed to the reference
+zero-based 20-class order (`aeroplane=0` through `tvmonitor=19`).
+
+Run the complete conversion on the dataset server with:
+
+```bash
+python3 scripts/convert_voc_to_coco.py \
+  --voc-root /hdd1/junhyung/pud_detr/datasets/VOC2007
+```
+
+The default destination is
+`/hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations`. It contains
+`pascal_train.json`, `pascal_val.json`, `pascal_test.json`, and one
+`pascal_train_drop_<ratio>.json` for each discovered bbox-drop XML directory.
+Use `--output-dir` to choose another destination, repeat
+`--drop-annotations-dir` to select directories explicitly, or add
+`--skip-drop-annotations` to generate only the three complete split files.
+Existing JSON files are protected unless `--overwrite` is supplied.
+
+The generated files can be passed directly to the training entry point, for
+example:
+
+```bash
+python3 train_pud_detr.py \
+  --method pud \
+  --experiment-name pud_drop03 \
+  --train-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_train_drop_0.3.json \
+  --val-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_val.json \
+  --test-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_test.json \
+  --trainval-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages \
+  --test-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages
 ```
