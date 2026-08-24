@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import json
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -85,6 +86,22 @@ class DropVocInstancesTest(unittest.TestCase):
             # tertiary objective, so the best feasible allocation is 2/2.
             self.assertEqual(original.count("cat") - remaining.count("cat"), 2)
             self.assertEqual(original.count("dog") - remaining.count("dog"), 2)
+
+            statistics = json.loads(
+                (output / "drop_statistics.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(statistics["schema_version"], 1)
+            self.assertEqual(statistics["requested"]["drop_ratio"], 0.5)
+            self.assertTrue(statistics["requested"]["feasible"])
+            self.assertEqual(statistics["images"]["train"], 3)
+            self.assertEqual(statistics["images"]["unchanged_val"], 1)
+            self.assertEqual(statistics["images"]["unchanged_test"], 1)
+            self.assertEqual(statistics["boxes"]["before"], 7)
+            self.assertEqual(statistics["boxes"]["dropped"], 4)
+            self.assertEqual(statistics["boxes"]["remaining"], 3)
+            self.assertAlmostEqual(statistics["boxes"]["actual_drop_ratio"], 4 / 7)
+            self.assertEqual(statistics["classes"]["cat"]["dropped"], 2)
+            self.assertEqual(statistics["classes"]["dog"]["remaining"], 2)
 
     def test_global_ratio_has_priority_over_class_balance(self):
         with tempfile.TemporaryDirectory() as temporary:

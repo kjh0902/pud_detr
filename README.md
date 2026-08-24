@@ -32,7 +32,12 @@ The default output for this example is:
 
 ```text
 datasets/VOC2007/Annotations_drop_ratio_0.3_seed_42
+datasets/VOC2007/Annotations_drop_ratio_0.3_seed_42/drop_statistics.json
 ```
+
+`drop_statistics.json` records the requested and actual drop ratios, dropped and
+remaining box counts, split image counts, modified training image count, and
+per-class drop statistics. The same summary is also printed to the terminal.
 
 Use that directory as the training annotation directory. The original
 `datasets/VOC2007/Annotations` directory is never modified.

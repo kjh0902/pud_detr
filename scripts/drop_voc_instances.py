@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import heapq
+import json
 import random
 import shutil
 import tempfile
@@ -18,7 +19,10 @@ import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import DefaultDict, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, DefaultDict, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+
+
+STATISTICS_FILENAME = "drop_statistics.json"
 
 
 @dataclass
@@ -231,6 +235,7 @@ def copy_and_write_annotations(
     output_dir: Path,
     annotations: Mapping[str, Annotation],
     dropped_indices: Mapping[str, Set[int]],
+    statistics: Mapping[str, Any],
     overwrite: bool,
 ) -> None:
     source_resolved = source_dir.resolve()
@@ -266,6 +271,10 @@ def copy_and_write_annotations(
             annotation.tree.write(
                 temporary / f"{image_id}.xml", encoding="utf-8", xml_declaration=False
             )
+        (temporary / STATISTICS_FILENAME).write_text(
+            json.dumps(statistics, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
         if output_dir.exists():
             backup = output_dir.with_name(f".{output_dir.name}.backup-{uuid.uuid4().hex}")
@@ -283,7 +292,9 @@ def copy_and_write_annotations(
             shutil.rmtree(temporary)
 
 
-def print_statistics(
+def build_statistics(
+    voc_root: Path,
+    source_dir: Path,
     output_dir: Path,
     seed: int,
     requested_ratio: float,
@@ -296,37 +307,87 @@ def print_statistics(
     modified_image_count: int,
     val_image_count: int,
     test_image_count: int,
-) -> None:
+) -> Dict[str, Any]:
     total_boxes = sum(class_totals.values())
     total_dropped = sum(dropped_counts.values())
+    class_statistics: Dict[str, Dict[str, Any]] = {}
+    for class_name in sorted(class_totals):
+        before = class_totals[class_name]
+        dropped = dropped_counts.get(class_name, 0)
+        actual_ratio = dropped / before
+        class_statistics[class_name] = {
+            "before": before,
+            "ideal_drop_boxes": before * requested_ratio,
+            "dropped": dropped,
+            "actual_drop_ratio": actual_ratio,
+            "deviation_percentage_points": 100.0 * (actual_ratio - requested_ratio),
+            "remaining": before - dropped,
+        }
+    return {
+        "schema_version": 1,
+        "voc_root": str(voc_root),
+        "source_annotations": str(source_dir),
+        "output_annotations": str(output_dir),
+        "statistics_file": str(output_dir / STATISTICS_FILENAME),
+        "seed": seed,
+        "priority_order": [
+            "keep_at_least_one_bbox_per_train_image",
+            "meet_global_drop_ratio",
+            "minimize_class_drop_ratio_deviation",
+        ],
+        "requested": {
+            "drop_ratio": requested_ratio,
+            "drop_boxes": requested_drop_count,
+            "feasible": requested_feasible,
+        },
+        "images": {
+            "train": train_image_count,
+            "modified_train": modified_image_count,
+            "unchanged_val": val_image_count,
+            "unchanged_test": test_image_count,
+        },
+        "boxes": {
+            "before": total_boxes,
+            "maximum_droppable": maximum_droppable,
+            "dropped": total_dropped,
+            "actual_drop_ratio": total_dropped / total_boxes,
+            "remaining": total_boxes - total_dropped,
+        },
+        "classes": class_statistics,
+    }
+
+
+def print_statistics(statistics: Mapping[str, Any]) -> None:
+    requested = statistics["requested"]
+    images = statistics["images"]
+    boxes = statistics["boxes"]
     print("\n=== PASCAL VOC instance dropping statistics ===")
-    print(f"output directory       : {output_dir}")
-    print(f"seed                   : {seed}")
-    print(f"requested drop ratio   : {requested_ratio:.6f}")
-    print(f"requested drop boxes   : {requested_drop_count}")
-    print(f"requested ratio feasible: {'yes' if requested_feasible else 'no (limited by min-1 constraint)'}")
-    print(f"maximum droppable boxes: {maximum_droppable}")
-    print(f"train images           : {train_image_count}")
-    print(f"modified train images  : {modified_image_count}")
-    print(f"unchanged val images   : {val_image_count}")
-    print(f"unchanged test images  : {test_image_count}")
-    print(f"train boxes before     : {total_boxes}")
-    print(f"train boxes dropped    : {total_dropped}")
-    print(f"actual overall ratio   : {total_dropped / total_boxes:.6f}")
-    print(f"train boxes remaining  : {total_boxes - total_dropped}")
+    print(f"output directory       : {statistics['output_annotations']}")
+    print(f"statistics JSON        : {statistics['statistics_file']}")
+    print(f"seed                   : {statistics['seed']}")
+    print(f"requested drop ratio   : {requested['drop_ratio']:.6f}")
+    print(f"requested drop boxes   : {requested['drop_boxes']}")
+    print(f"requested ratio feasible: {'yes' if requested['feasible'] else 'no (limited by min-1 constraint)'}")
+    print(f"maximum droppable boxes: {boxes['maximum_droppable']}")
+    print(f"train images           : {images['train']}")
+    print(f"modified train images  : {images['modified_train']}")
+    print(f"unchanged val images   : {images['unchanged_val']}")
+    print(f"unchanged test images  : {images['unchanged_test']}")
+    print(f"train boxes before     : {boxes['before']}")
+    print(f"train boxes dropped    : {boxes['dropped']}")
+    print(f"actual overall ratio   : {boxes['actual_drop_ratio']:.6f}")
+    print(f"train boxes remaining  : {boxes['remaining']}")
     print()
     header = f"{'class':<18} {'before':>8} {'ideal':>10} {'dropped':>8} {'actual%':>9} {'delta(pp)':>10} {'remain':>8}"
     print(header)
     print("-" * len(header))
-    for class_name in sorted(class_totals):
-        before = class_totals[class_name]
-        dropped = dropped_counts.get(class_name, 0)
-        actual_percent = 100.0 * dropped / before
-        ideal = before * requested_ratio
+    for class_name, class_stats in statistics["classes"].items():
         print(
-            f"{class_name:<18} {before:>8} {ideal:>10.2f} {dropped:>8} "
-            f"{actual_percent:>8.3f}% {actual_percent - 100.0 * requested_ratio:>+9.3f} "
-            f"{before - dropped:>8}"
+            f"{class_name:<18} {class_stats['before']:>8} "
+            f"{class_stats['ideal_drop_boxes']:>10.2f} {class_stats['dropped']:>8} "
+            f"{100.0 * class_stats['actual_drop_ratio']:>8.3f}% "
+            f"{class_stats['deviation_percentage_points']:>+9.3f} "
+            f"{class_stats['remaining']:>8}"
         )
 
 
@@ -394,10 +455,9 @@ def run(args: argparse.Namespace) -> Path:
         if len(annotations[image_id].objects) - len(indices) < 1:
             raise AssertionError(f"Internal error: no objects would remain in {image_id}")
 
-    copy_and_write_annotations(
-        source_dir, output_dir, annotations, dropped_indices, args.overwrite
-    )
-    print_statistics(
+    statistics = build_statistics(
+        voc_root,
+        source_dir,
         output_dir,
         args.seed,
         args.drop_ratio,
@@ -411,6 +471,15 @@ def run(args: argparse.Namespace) -> Path:
         val_count,
         test_count,
     )
+    copy_and_write_annotations(
+        source_dir,
+        output_dir,
+        annotations,
+        dropped_indices,
+        statistics,
+        args.overwrite,
+    )
+    print_statistics(statistics)
     return output_dir
 
 
