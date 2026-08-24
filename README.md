@@ -29,6 +29,13 @@ RTX 3090 supports FP16 Tensor Cores, so `16-mixed` is the recommended precision
 for this server. Use `32-true` if mixed-precision stability needs to be ruled
 out during debugging.
 
+Strict deterministic algorithms are disabled by default because Deformable
+DETR backpropagates through CUDA `grid_sample`, whose backward kernel is not
+deterministic. Random seeds are still applied. Passing `--deterministic` enables
+Lightning's best-effort `warn` mode: deterministic kernels are selected where
+available, while unsupported operations warn and continue instead of raising a
+`grid_sampler_2d_backward_cuda` runtime error.
+
 `scripts/drop_voc_instances.py` creates a separate PASCAL VOC annotation directory
 with priority-constrained random bounding-box instance dropping.
 

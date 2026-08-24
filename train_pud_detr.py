@@ -26,8 +26,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from scripts.gpu_selection import (
+    DEFAULT_DETERMINISTIC,
     concrete_cuda_index,
     configure_cuda_visibility,
+    lightning_deterministic_setting,
     normalize_device_argument,
 )
 
@@ -168,7 +170,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     training.add_argument(
         "--deterministic",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=DEFAULT_DETERMINISTIC,
+        help=(
+            "Enable best-effort deterministic algorithms. CUDA operations "
+            "without deterministic kernels emit warnings instead of stopping "
+            "training; disabled by default for Deformable DETR."
+        ),
     )
 
     args = parser.parse_args(argv)
@@ -1302,13 +1309,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         auto_insert_metric_name=False,
     )
     logger = CSVLogger(save_dir=str(run_dir), name="lightning_logs")
+    deterministic_setting = lightning_deterministic_setting(args.deterministic)
     trainer = Trainer(
         max_epochs=args.epochs,
         gradient_clip_val=args.gradient_clip,
         accelerator=accelerator,
         devices=devices,
         precision=args.precision,
-        deterministic=args.deterministic,
+        deterministic=deterministic_setting,
         logger=logger,
         callbacks=[checkpoint_callback],
         log_every_n_steps=args.log_every_n_steps,
@@ -1323,6 +1331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "devices": devices,
             "physical_gpu": concrete_cuda_index(args.device),
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "lightning_deterministic": deterministic_setting,
             "train_json": train_json,
             "validation_json": validation_json,
             "test_json": test_json,

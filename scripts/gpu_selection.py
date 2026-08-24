@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
-from typing import Sequence
+from typing import Literal, Sequence
 
 
 GENERIC_DEVICES = {"auto", "cpu", "cuda"}
+DEFAULT_DETERMINISTIC = False
 
 
 def normalize_device_argument(device: str) -> str:
@@ -55,3 +56,8 @@ def configure_cuda_visibility(argv: Sequence[str]) -> int | None:
     if physical_index is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_index)
     return physical_index
+
+
+def lightning_deterministic_setting(enabled: bool) -> bool | Literal["warn"]:
+    """Use warn-only determinism because CUDA grid_sample has no strict kernel."""
+    return "warn" if enabled else False
