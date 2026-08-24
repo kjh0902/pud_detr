@@ -6,6 +6,29 @@ Install the pinned training dependencies with:
 python3 -m pip install -r requirements.txt
 ```
 
+The requirements select the official PyTorch CUDA 12.6 wheels for the server's
+NVIDIA 560.35.03 driver and RTX 3090 GPUs.
+
+Select one physical GPU directly with `--device 0` or `--device 1`. The chosen
+ID is applied to `CUDA_VISIBLE_DEVICES` before PyTorch and Lightning are
+imported, so the process sees only that GPU (as logical `cuda:0`). For example:
+
+```bash
+python3 train_pud_detr.py \
+  --device 1 \
+  --precision 16-mixed \
+  --experiment-name pud_drop03_gpu1 \
+  --train-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_train_drop_0.3.json \
+  --val-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_val.json \
+  --test-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_test.json \
+  --trainval-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages \
+  --test-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages
+```
+
+RTX 3090 supports FP16 Tensor Cores, so `16-mixed` is the recommended precision
+for this server. Use `32-true` if mixed-precision stability needs to be ruled
+out during debugging.
+
 `scripts/drop_voc_instances.py` creates a separate PASCAL VOC annotation directory
 with priority-constrained random bounding-box instance dropping.
 

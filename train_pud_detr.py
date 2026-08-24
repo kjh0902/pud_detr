@@ -25,9 +25,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from scripts.gpu_selection import (
+    concrete_cuda_index,
+    configure_cuda_visibility,
+    normalize_device_argument,
+)
+
 # Lightning imports torchmetrics, which imports matplotlib.  Keep its cache out
 # of a potentially read-only home directory in managed or containerized runs.
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/pud_detr_matplotlib")
+
+# A concrete --device value is applied before importing torch or Lightning.
+# CUDA remaps that one physical GPU to logical cuda:0 inside this process.
+configure_cuda_visibility(sys.argv[1:])
 
 import numpy as np
 import pytorch_lightning as pl
@@ -144,7 +154,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     training.add_argument(
         "--device",
         default="auto",
-        help="auto, cpu, cuda, or a concrete CUDA device such as cuda:1.",
+        help=(
+            "auto, cpu, cuda, or a physical GPU ID such as 0 or 1. "
+            "The legacy cuda:<ID> form is also accepted."
+        ),
     )
     training.add_argument(
         "--precision",
@@ -182,10 +195,10 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--focal-alpha must be in [0, 1]")
     if args.focal_gamma < 0:
         parser.error("--focal-gamma cannot be negative")
-    if args.device not in {"auto", "cpu", "cuda"} and not args.device.startswith(
-        "cuda:"
-    ):
-        parser.error("--device must be auto, cpu, cuda, or cuda:<index>")
+    try:
+        args.device = normalize_device_argument(args.device)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def resolved_path(path: Path) -> Path:
@@ -1102,15 +1115,28 @@ def evaluate_model(
 
 
 def resolve_lightning_device(device: str) -> tuple[str, int | list[int]]:
+    device = normalize_device_argument(device)
     if device == "auto":
         return ("gpu", 1) if torch.cuda.is_available() else ("cpu", 1)
     if device == "cpu":
         return "cpu", 1
     if not torch.cuda.is_available():
-        raise RuntimeError(f"CUDA device requested but CUDA is unavailable: {device}")
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<not set>")
+        raise RuntimeError(
+            f"CUDA device requested but CUDA is unavailable: {device}; "
+            f"CUDA_VISIBLE_DEVICES={visible}"
+        )
     if device == "cuda":
         return "gpu", 1
-    index = int(device.split(":", maxsplit=1)[1])
+
+    index = int(device)
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == str(index):
+        if torch.cuda.device_count() != 1:
+            raise RuntimeError(
+                "A concrete GPU ID must expose exactly one logical CUDA device; "
+                f"CUDA_VISIBLE_DEVICES={index}, count={torch.cuda.device_count()}"
+            )
+        return "gpu", 1
     if index < 0 or index >= torch.cuda.device_count():
         raise RuntimeError(
             f"CUDA device index {index} is unavailable; count={torch.cuda.device_count()}"
@@ -1184,6 +1210,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"Method={args.method} weight_p(alpha)={args.weight_p} "
         f"reduction={args.reduction} seed={args.seed}"
     )
+    if accelerator == "gpu":
+        print(
+            f"CUDA selection: requested={args.device} "
+            f"physical_gpu={concrete_cuda_index(args.device)} "
+            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<not set>')} "
+            f"logical_device=cuda:0"
+        )
 
     processor_kwargs: dict[str, Any] = {
         "revision": args.hf_revision,
@@ -1288,6 +1321,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "run_dir": run_dir,
             "accelerator": accelerator,
             "devices": devices,
+            "physical_gpu": concrete_cuda_index(args.device),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "train_json": train_json,
             "validation_json": validation_json,
             "test_json": test_json,
