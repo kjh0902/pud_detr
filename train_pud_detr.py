@@ -6,10 +6,10 @@ This script consolidates the standalone experiment files in
 reproducible entry point.  One invocation represents one method, one training
 annotation file, and one random seed.
 
-The implementation intentionally preserves the historical PU target mask:
-every zero entry in the one-hot class target contributes to the unlabeled
-negative-risk term.  ``weight_p`` is the scaling factor alpha described in the
-paper.  The positive-as-negative focal term uses the corrected modulation from
+The PU target mask follows the paper: only queries left unmatched by Hungarian
+matching contribute to the unlabeled negative-risk term.  ``weight_p`` is the
+scaling factor alpha described in the paper.  The positive-as-negative focal
+term uses the corrected modulation from
 ``pu_pascal_07_tuning_with_rewrite/train.py``.
 """
 
@@ -108,8 +108,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     experiment.add_argument(
         "--reduction",
-        choices=("reduce_clamp", "clamp_reduce"),
-        default="reduce_clamp",
+        choices=("global", "query_wise", "element_wise"),
+        default="global",
         help="Non-negative correction order used only for method=pud.",
     )
     experiment.add_argument("--drop-ratio", type=float, default=None)
@@ -548,20 +548,22 @@ def pu_sigmoid_focal_loss(
     inputs: Tensor,
     targets: Tensor,
     num_boxes: Tensor,
+    unlabeled_mask: Tensor,
     unlabeled_weight: Tensor,
     weight_p: float,
     reduction: str,
     alpha: float,
     gamma: float,
 ) -> Tensor:
-    """Historical nnPU focal loss with the corrected R_p^- modulation.
-
-    The historical implementation treats every zero one-hot class position as
-    part of the unlabeled negative-risk term.  This is kept deliberately for
-    compatibility with the experiment scripts being consolidated.
-    """
+    """Paper-aligned nnPU focal loss with corrected R_p^- modulation."""
 
     positive_mask = targets.eq(1)
+    if unlabeled_mask.shape != targets.shape:
+        raise ValueError(
+            "unlabeled_mask must have the same [B, Q, C] shape as targets"
+        )
+    if unlabeled_mask.dtype != torch.bool:
+        raise ValueError("unlabeled_mask must be boolean")
     positive_focal = sigmoid_focal_loss_tensor(inputs, targets, alpha, gamma)
 
     probability = inputs.sigmoid()
@@ -580,19 +582,33 @@ def pu_sigmoid_focal_loss(
     negative_risk = torch.where(
         positive_mask,
         -background_focal * weight_p,
+        torch.zeros_like(background_focal),
+    )
+    negative_risk = torch.where(
+        unlabeled_mask,
         background_focal * unlabeled_weight,
+        negative_risk,
     )
 
-    if reduction == "reduce_clamp":
-        positive_scalar = positive_risk.mean(dim=1).sum() / num_boxes
-        negative_scalar = (negative_risk.mean(dim=1).sum() / num_boxes).clamp(
-            min=0
-        )
-        return positive_scalar + negative_scalar
-    if reduction == "clamp_reduce":
-        return (positive_risk + negative_risk.clamp(min=0)).mean(dim=1).sum() / (
-            num_boxes
-        )
+    positive_scalar = positive_risk.mean(dim=1).sum() / num_boxes
+    negative_scalar = reduce_non_negative_risk(
+        negative_risk, num_boxes, reduction
+    )
+    return positive_scalar + negative_scalar
+
+
+def reduce_non_negative_risk(
+    negative_risk: Tensor, num_boxes: Tensor, reduction: str
+) -> Tensor:
+    """Apply the requested nnPU correction while preserving 1/(N_box * Q)."""
+
+    if reduction == "element_wise":
+        return negative_risk.clamp(min=0).mean(dim=1).sum() / num_boxes
+    if reduction == "query_wise":
+        return negative_risk.mean(dim=1).clamp(min=0).sum() / num_boxes
+    if reduction == "global":
+        per_image_risk = negative_risk.mean(dim=1).sum(dim=1)
+        return per_image_risk.clamp(min=0).sum() / num_boxes
     raise ValueError(f"unsupported PU reduction: {reduction}")
 
 
@@ -678,6 +694,15 @@ class DetectionCriterion(nn.Module):
                 self.focal_gamma,
             )
         else:
+            matched_query_mask = torch.zeros(
+                (batch_size, num_queries),
+                dtype=torch.bool,
+                device=source_logits.device,
+            )
+            matched_query_mask[source_index] = True
+            unlabeled_mask = (~matched_query_mask).unsqueeze(-1).expand_as(
+                source_logits
+            )
             matched_query_count = target_classes_o.numel()
             unmatched_query_count = max(
                 batch_size * num_queries - matched_query_count, 1
@@ -689,6 +714,7 @@ class DetectionCriterion(nn.Module):
                 source_logits,
                 target_onehot,
                 num_boxes,
+                unlabeled_mask,
                 unlabeled_weight,
                 self.weight_p,
                 self.reduction,
@@ -696,8 +722,7 @@ class DetectionCriterion(nn.Module):
                 self.focal_gamma,
             )
 
-        # Preserve the Deformable DETR implementation's query scaling.
-        return {"loss_ce": classification_loss * num_queries}
+        return {"loss_ce": classification_loss}
 
     def loss_boxes(
         self,
@@ -1350,7 +1375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "versions": package_versions(),
         "implementation": {
             "weight_p_is_paper_alpha": True,
-            "pu_mask": "historical_all_zero_onehot_positions",
+            "pu_mask": "hungarian_unmatched_queries_only",
             "positive_as_negative_modulation": "probability**gamma",
             "auxiliary_loss": False,
             "test_checkpoint": "best_validation_AP",
