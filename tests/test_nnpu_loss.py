@@ -179,7 +179,7 @@ class NnPuLossTest(unittest.TestCase):
             torch.allclose(actual, risk.mean(dim=1).sum().clamp(min=0) / num_boxes)
         )
 
-    def test_loss_labels_does_not_restore_query_scaling_for_pn_or_pud(self):
+    def test_loss_labels_restores_query_scaling_for_pn_and_pud(self):
         outputs = {
             "pred_logits": torch.zeros((1, 2, 1)),
             "pred_boxes": torch.zeros((1, 2, 4)),
@@ -209,7 +209,7 @@ class NnPuLossTest(unittest.TestCase):
             if method == "pn":
                 expected = sigmoid_focal_loss_tensor(
                     outputs["pred_logits"], target_onehot, 0.25, 2.0
-                ).mean(dim=1).sum() / num_boxes
+                ).mean(dim=1).sum() / num_boxes * outputs["pred_logits"].shape[1]
             else:
                 expected = pu_sigmoid_focal_loss(
                     outputs["pred_logits"],
@@ -221,7 +221,7 @@ class NnPuLossTest(unittest.TestCase):
                     "global",
                     0.25,
                     2.0,
-                )
+                ) * outputs["pred_logits"].shape[1]
             self.assertTrue(torch.allclose(actual, expected))
 
 

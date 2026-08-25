@@ -722,7 +722,7 @@ class DetectionCriterion(nn.Module):
                 self.focal_gamma,
             )
 
-        return {"loss_ce": classification_loss}
+        return {"loss_ce": classification_loss * num_queries}
 
     def loss_boxes(
         self,
