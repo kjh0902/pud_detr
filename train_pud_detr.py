@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import os
 import random
@@ -114,7 +115,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     experiment.add_argument("--drop-ratio", type=float, default=None)
     experiment.add_argument("--nominal-drop-probability", type=float, default=None)
-    experiment.add_argument("--seed", type=int, default=42)
+    seed_group = experiment.add_mutually_exclusive_group()
+    seed_group.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Run one experiment with this seed.",
+    )
+    seed_group.add_argument(
+        "--seeds",
+        type=int,
+        nargs=3,
+        metavar=("SEED1", "SEED2", "SEED3"),
+        help="Run three independent experiments under the same conditions.",
+    )
     experiment.add_argument("--experiment-name", required=True)
     experiment.add_argument("--output-dir", type=Path, default=Path("outputs"))
     experiment.add_argument(
@@ -190,6 +204,8 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         )
     if args.weight_p <= 0:
         parser.error("--weight-p must be positive")
+    if args.seeds is not None and len(set(args.seeds)) != 3:
+        parser.error("--seeds requires three distinct seed values")
     if args.epochs <= 0:
         parser.error("--epochs must be positive")
     if args.batch_size <= 0:
@@ -1213,6 +1229,50 @@ def write_metrics_csv(
                 writer.writerow(("test", name, value))
 
 
+def write_multi_seed_csv(
+    path: Path, results: Sequence[dict[str, Any]]
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    validation_aps = [float(result["best_validation_ap"]) for result in results]
+    validation_ap_mean = float(np.mean(validation_aps))
+    validation_ap_std = float(np.std(validation_aps))
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = (
+            "record_type",
+            "seed",
+            "best_validation_ap",
+            "validation_ap_mean",
+            "validation_ap_std",
+            "run_dir",
+            "best_checkpoint",
+        )
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(
+                {
+                    "record_type": "seed",
+                    "seed": result["seed"],
+                    "best_validation_ap": result["best_validation_ap"],
+                    "validation_ap_mean": validation_ap_mean,
+                    "validation_ap_std": validation_ap_std,
+                    "run_dir": result["run_dir"],
+                    "best_checkpoint": result["best_checkpoint"],
+                }
+            )
+        writer.writerow(
+            {
+                "record_type": "summary",
+                "seed": "",
+                "best_validation_ap": "",
+                "validation_ap_mean": validation_ap_mean,
+                "validation_ap_std": validation_ap_std,
+                "run_dir": "",
+                "best_checkpoint": "",
+            }
+        )
+
+
 def package_versions() -> dict[str, str]:
     return {
         "python": sys.version.split()[0],
@@ -1224,8 +1284,7 @@ def package_versions() -> dict[str, str]:
     }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv)
+def run_single_seed(args: argparse.Namespace) -> dict[str, Any]:
     set_reproducibility(args.seed, args.deterministic)
     summaries, id2label, label2id = validate_dataset_inputs(args)
     accelerator, devices = resolve_lightning_device(args.device)
@@ -1430,6 +1489,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_dir / "metrics.csv", best_validation_ap, test_metrics
     )
     print(f"Metrics written to {run_dir / 'metrics.csv'}")
+    return {
+        "seed": args.seed,
+        "best_validation_ap": best_validation_ap,
+        "run_dir": str(run_dir),
+        "best_checkpoint": best_checkpoint,
+        "test_metrics": test_metrics,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    seeds = args.seeds if args.seeds is not None else [args.seed]
+    results: list[dict[str, Any]] = []
+    for index, seed in enumerate(seeds, start=1):
+        run_args = argparse.Namespace(**vars(args))
+        run_args.seed = seed
+        print(
+            f"\n=== Seed run {index}/{len(seeds)}: seed={seed} ===",
+            flush=True,
+        )
+        results.append(run_single_seed(run_args))
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    if len(results) > 1:
+        summary_path = (
+            resolved_path(args.output_dir)
+            / args.experiment_name
+            / "multi_seed_results.csv"
+        )
+        write_multi_seed_csv(summary_path, results)
+        validation_aps = [result["best_validation_ap"] for result in results]
+        print(
+            f"Multi-seed validation AP: mean={np.mean(validation_aps):.6f} "
+            f"std={np.std(validation_aps):.6f}"
+        )
+        print(f"Multi-seed results written to {summary_path}")
     return 0
 
 

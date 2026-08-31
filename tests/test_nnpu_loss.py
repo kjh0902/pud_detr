@@ -1,10 +1,14 @@
 import contextlib
 import io
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 
 try:
     import torch
+    import train_pud_detr
 
     from train_pud_detr import (
         DetectionCriterion,
@@ -106,7 +110,12 @@ class NnPuLossTest(unittest.TestCase):
             "train-images",
             "--skip-test",
         ]
-        self.assertEqual(parse_args(required).reduction, "global")
+        single_seed_args = parse_args(required)
+        self.assertEqual(single_seed_args.reduction, "global")
+        self.assertEqual(single_seed_args.seed, 42)
+        self.assertIsNone(single_seed_args.seeds)
+        multi_seed_args = parse_args([*required, "--seeds", "7", "11", "19"])
+        self.assertEqual(multi_seed_args.seeds, [7, 11, 19])
         for reduction in ("global", "query_wise", "element_wise"):
             self.assertEqual(
                 parse_args([*required, "--reduction", reduction]).reduction,
@@ -153,6 +162,53 @@ class NnPuLossTest(unittest.TestCase):
         self.assertFalse(
             torch.allclose(actual, risk.mean(dim=1).sum().clamp(min=0) / num_boxes)
         )
+
+    def test_training_entry_point_runs_three_seeds_independently(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+
+            def fake_run(args):
+                return {
+                    "seed": args.seed,
+                    "best_validation_ap": args.seed / 1000,
+                    "run_dir": str(output_dir / f"seed_{args.seed}"),
+                    "best_checkpoint": f"checkpoint_{args.seed}",
+                    "test_metrics": None,
+                }
+
+            with mock.patch.object(
+                train_pud_detr, "run_single_seed", side_effect=fake_run
+            ) as run_single_seed, mock.patch.object(
+                train_pud_detr.torch.cuda, "is_available", return_value=False
+            ):
+                return_code = train_pud_detr.main(
+                    [
+                        "--experiment-name",
+                        "multi",
+                        "--output-dir",
+                        str(output_dir),
+                        "--train-json",
+                        "train.json",
+                        "--val-json",
+                        "val.json",
+                        "--trainval-image-dir",
+                        "images",
+                        "--skip-test",
+                        "--seeds",
+                        "7",
+                        "11",
+                        "19",
+                    ]
+                )
+
+            self.assertEqual(return_code, 0)
+            self.assertEqual(
+                [call.args[0].seed for call in run_single_seed.call_args_list],
+                [7, 11, 19],
+            )
+            self.assertTrue(
+                (output_dir / "multi" / "multi_seed_results.csv").is_file()
+            )
 
 
 if __name__ == "__main__":

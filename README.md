@@ -36,6 +36,24 @@ Lightning's best-effort `warn` mode: deterministic kernels are selected where
 available, while unsupported operations warn and continue instead of raising a
 `grid_sampler_2d_backward_cuda` runtime error.
 
+Use `--seed 42` for a single run. To evaluate the same configuration with
+exactly three independent seeds, replace it with `--seeds`, for example:
+
+```bash
+python3 train_pud_detr.py \
+  --seeds 7 11 19 \
+  --experiment-name pud_three_seeds \
+  --train-json /path/to/pascal_train_drop_0.3.json \
+  --val-json /path/to/pascal_val.json \
+  --test-json /path/to/pascal_test.json \
+  --trainval-image-dir /path/to/JPEGImages \
+  --test-image-dir /path/to/JPEGImages
+```
+
+Each seed gets its own `seed_<seed>` run directory. Three-seed runs also write
+`multi_seed_results.csv` under the experiment directory with per-seed best
+validation AP plus its mean and population standard deviation.
+
 `scripts/drop_voc_instances.py` creates a separate PASCAL VOC annotation directory
 with priority-constrained random bounding-box instance dropping.
 
@@ -162,6 +180,7 @@ it:
 python3 run_val_ablation.py \
   --weight-p-values 1 2 5 10 \
   --reductions global query_wise element_wise \
+  --seeds 7 11 19 \
   --output-dir outputs/val_ablation \
   --results-csv outputs/val_ablation/results.csv \
   -- \
@@ -173,5 +192,8 @@ python3 run_val_ablation.py \
 ```
 
 The runner owns `--method`, `--weight-p`, `--reduction`, `--epochs`,
-`--experiment-name`, `--output-dir`, and `--skip-test`; these options cannot be
-overridden after `--`.
+`--experiment-name`, `--output-dir`, `--skip-test`, `--seed`, and `--seeds`;
+these options cannot be overridden after `--`. Omit `--seeds` (or pass one
+`--seed`) to run the ablation in single-seed mode. In three-seed mode, the CSV
+contains one row per seed and repeats the condition's validation AP mean and
+population standard deviation on those rows.
