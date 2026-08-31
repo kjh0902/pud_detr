@@ -146,3 +146,32 @@ python3 train_pud_detr.py \
   --trainval-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages \
   --test-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages
 ```
+
+## Validation ablation
+
+`run_val_ablation.py` sweeps the Cartesian product of `weight_p` values and
+non-negative correction reductions. Every combination trains PUD-DETR for 20
+epochs, validates after every epoch, and records the best validation AP in one
+CSV. It forces `--skip-test`, so test annotations and images are neither
+required nor loaded.
+
+Pass the sweep settings before `--` and the ordinary training arguments after
+it:
+
+```bash
+python3 run_val_ablation.py \
+  --weight-p-values 1 2 5 10 \
+  --reductions global query_wise element_wise \
+  --output-dir outputs/val_ablation \
+  --results-csv outputs/val_ablation/results.csv \
+  -- \
+  --device 1 \
+  --precision 16-mixed \
+  --train-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_train_drop_0.3.json \
+  --val-json /hdd1/junhyung/pud_detr/datasets/VOC2007/coco_annotations/pascal_val.json \
+  --trainval-image-dir /hdd1/junhyung/pud_detr/datasets/VOC2007/JPEGImages
+```
+
+The runner owns `--method`, `--weight-p`, `--reduction`, `--epochs`,
+`--experiment-name`, `--output-dir`, and `--skip-test`; these options cannot be
+overridden after `--`.

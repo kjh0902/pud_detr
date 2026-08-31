@@ -108,9 +108,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     experiment.add_argument(
         "--reduction",
-        choices=("reduce_clamp", "clamp_reduce"),
-        default="reduce_clamp",
-        help="Non-negative correction order used only for method=pud.",
+        choices=("global", "query_wise", "element_wise"),
+        default="global",
+        help="Non-negative correction granularity used only for method=pud.",
     )
     experiment.add_argument("--drop-ratio", type=float, default=None)
     experiment.add_argument("--nominal-drop-probability", type=float, default=None)
@@ -126,9 +126,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     data = parser.add_argument_group("data")
     data.add_argument("--train-json", type=Path, required=True)
     data.add_argument("--val-json", type=Path, required=True)
-    data.add_argument("--test-json", type=Path, required=True)
+    data.add_argument("--test-json", type=Path)
     data.add_argument("--trainval-image-dir", type=Path, required=True)
-    data.add_argument("--test-image-dir", type=Path, required=True)
+    data.add_argument("--test-image-dir", type=Path)
     data.add_argument("--num-workers", type=int, default=6)
     data.add_argument("--prefetch-factor", type=int, default=1)
 
@@ -184,6 +184,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if not args.skip_test and (args.test_json is None or args.test_image_dir is None):
+        parser.error(
+            "--test-json and --test-image-dir are required unless --skip-test is set"
+        )
     if args.weight_p <= 0:
         parser.error("--weight-p must be positive")
     if args.epochs <= 0:
@@ -295,27 +299,32 @@ def validate_dataset_inputs(
     args: argparse.Namespace,
 ) -> tuple[dict[str, AnnotationSummary], dict[int, str], dict[str, int]]:
     trainval_image_dir = resolved_path(args.trainval_image_dir)
-    test_image_dir = resolved_path(args.test_image_dir)
     if not trainval_image_dir.is_dir():
         raise NotADirectoryError(
             f"train/validation image directory does not exist: {trainval_image_dir}"
         )
-    if not test_image_dir.is_dir():
-        raise NotADirectoryError(f"test image directory does not exist: {test_image_dir}")
+    if not args.skip_test:
+        test_image_dir = resolved_path(args.test_image_dir)
+        if not test_image_dir.is_dir():
+            raise NotADirectoryError(
+                f"test image directory does not exist: {test_image_dir}"
+            )
 
     summaries: dict[str, AnnotationSummary] = {}
     label_maps: dict[str, tuple[dict[int, str], dict[str, int]]] = {}
-    for split_name, path in (
+    annotation_splits = [
         ("train", args.train_json),
         ("validation", args.val_json),
-        ("test", args.test_json),
-    ):
+    ]
+    if not args.skip_test:
+        annotation_splits.append(("test", args.test_json))
+    for split_name, path in annotation_splits:
         summary, id2label, label2id = load_and_validate_annotation(path, split_name)
         summaries[split_name] = summary
         label_maps[split_name] = (id2label, label2id)
 
     train_id2label, train_label2id = label_maps["train"]
-    for split_name in ("validation", "test"):
+    for split_name, _ in annotation_splits[1:]:
         if label_maps[split_name][0] != train_id2label:
             raise ValueError(
                 f"{split_name} categories differ from the training categories"
@@ -583,16 +592,26 @@ def pu_sigmoid_focal_loss(
         background_focal * unlabeled_weight,
     )
 
-    if reduction == "reduce_clamp":
-        positive_scalar = positive_risk.mean(dim=1).sum() / num_boxes
-        negative_scalar = (negative_risk.mean(dim=1).sum() / num_boxes).clamp(
-            min=0
-        )
-        return positive_scalar + negative_scalar
-    if reduction == "clamp_reduce":
-        return (positive_risk + negative_risk.clamp(min=0)).mean(dim=1).sum() / (
-            num_boxes
-        )
+    positive_scalar = positive_risk.mean(dim=1).sum() / num_boxes
+    negative_scalar = reduce_non_negative_risk(
+        negative_risk, num_boxes, reduction
+    )
+    return positive_scalar + negative_scalar
+
+
+def reduce_non_negative_risk(
+    negative_risk: Tensor, num_boxes: Tensor, reduction: str
+) -> Tensor:
+    """Apply nnPU correction at element, query/class, or image granularity."""
+
+    if reduction == "element_wise":
+        return negative_risk.clamp(min=0).mean(dim=1).sum() / num_boxes
+    if reduction == "query_wise":
+        per_query_class_risk = negative_risk.mean(dim=1)
+        return per_query_class_risk.clamp(min=0).sum() / num_boxes
+    if reduction == "global":
+        per_image_risk = negative_risk.mean(dim=1).sum(dim=1)
+        return per_image_risk.clamp(min=0).sum() / num_boxes
     raise ValueError(f"unsupported PU reduction: {reduction}")
 
 
@@ -1234,10 +1253,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     trainval_image_dir = resolved_path(args.trainval_image_dir)
-    test_image_dir = resolved_path(args.test_image_dir)
     train_json = resolved_path(args.train_json)
     validation_json = resolved_path(args.val_json)
-    test_json = resolved_path(args.test_json)
+    test_image_dir = (
+        None if args.skip_test else resolved_path(args.test_image_dir)
+    )
+    test_json = None if args.skip_test else resolved_path(args.test_json)
 
     train_dataset = ProcessedCocoDetection(
         trainval_image_dir, train_json, processor
@@ -1245,7 +1266,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     validation_dataset = ProcessedCocoDetection(
         trainval_image_dir, validation_json, processor
     )
-    test_dataset = ProcessedCocoDetection(test_image_dir, test_json, processor)
+    test_dataset = (
+        None
+        if args.skip_test
+        else ProcessedCocoDetection(test_image_dir, test_json, processor)
+    )
     collator = CocoCollator(processor)
     pin_memory = accelerator == "gpu"
     train_loader = make_data_loader(
@@ -1268,16 +1293,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.seed + 1,
         pin_memory,
     )
-    test_loader = make_data_loader(
-        test_dataset,
-        collator,
-        args.batch_size,
-        args.num_workers,
-        args.prefetch_factor,
-        False,
-        args.seed + 2,
-        pin_memory,
-    )
+    test_loader = None
+    if test_dataset is not None:
+        test_loader = make_data_loader(
+            test_dataset,
+            collator,
+            args.batch_size,
+            args.num_workers,
+            args.prefetch_factor,
+            False,
+            args.seed + 2,
+            pin_memory,
+        )
 
     model = DeformableDetrExperiment(
         processor=processor,
@@ -1321,6 +1348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         callbacks=[checkpoint_callback],
         log_every_n_steps=args.log_every_n_steps,
         num_sanity_val_steps=0,
+        check_val_every_n_epoch=1,
     )
 
     configuration: dict[str, Any] = {
@@ -1389,6 +1417,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     test_metrics: dict[str, float] | None = None
     if not args.skip_test:
+        assert test_loader is not None and test_json is not None
         test_metrics = evaluate_model(model, test_loader, processor, test_json)
 
     configuration["result"] = {
