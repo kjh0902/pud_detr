@@ -1,4 +1,53 @@
+# Python and local environments
 __pycache__/
 *.py[cod]
-datasets/
-outputs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local data: publish only the supplied experiment annotations.
+/datasets/*
+!/datasets/VOC2007/
+/datasets/VOC2007/*
+!/datasets/VOC2007/coco_annotations/
+/datasets/VOC2007/coco_annotations/*
+!/datasets/VOC2007/coco_annotations/pascal_train.json
+!/datasets/VOC2007/coco_annotations/pascal_val.json
+!/datasets/VOC2007/coco_annotations/pascal_test.json
+!/datasets/VOC2007/coco_annotations/pascal_train_drop_0.[1-7].json
+!/datasets/diatom/
+/datasets/diatom/*
+!/datasets/diatom/diatom_train.json
+!/datasets/diatom/diatom_val.json
+!/datasets/diatom/diatom_test.json
+
+# Generated experiment artifacts
+/outputs/
+/checkpoints/
+lightning_logs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.log
+events.out.tfevents.*
+/val_ablation_results.csv
+
+# Scratch, caches, editor state, and local credentials
+/tmp/
+/temp/
+/.cache/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
