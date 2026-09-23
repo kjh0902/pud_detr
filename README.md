@@ -64,17 +64,6 @@ Each incomplete training file retains the same 2,501 images and at least one box
 
 ![Illustration of training annotation removal](figures/experiment_pascal_drop.png)
 
-Figure labels denote configured settings; the table records actual aggregate removal in the released files.
-
-For **new annotation variants**, the existing utilities can drop training boxes and convert VOC XMLs:
-
-```bash
-python scripts/drop_voc_instances.py --voc-root datasets/VOC2007 --drop-ratio 0.3 --seed 42
-python scripts/convert_voc_to_coco.py --voc-root datasets/VOC2007 --output-dir outputs/voc_regenerated
-```
-
-Dropping prioritizes keeping one object per training image, meeting the feasible global drop count, and balancing class-specific drop rates, in that order. Validation/test XMLs remain unchanged. This example seed is not verified as the generation seed of the released JSONs. Regeneration is optional and does not establish identical masks; do not overwrite the released files for paper reproduction.
-
 ### Diatom dataset
 
 The manuscript uses the dataset described by Gündüz, Solak, and Günal, *Segmentation of diatoms using edge detection and deep learning* (2022), [DOI: 10.55730/1300-0632.3938](https://doi.org/10.55730/1300-0632.3938). After excluding 13 unannotated images, the paper reports 2,184 microscopy images across 68 species, split into **1,520 train / 327 validation / 337 test** images. No synthetic drop is applied.
@@ -89,11 +78,11 @@ datasets/diatom/
 └── diatom_test.json
 ```
 
-Use the committed split membership and category mapping rather than creating a new random split. See the manifest for the actual annotation counts and IDs. The paper selects **`--weight-p 7` using validation AR1** and reports AR1/AR10/AR100 against the incomplete references; these metrics do not measure recall over every visible diatom. Checkpoint selection in the preserved code still uses validation AP. The distinction and tuning limitations are explained in [reproducibility notes](docs/REPRODUCIBILITY.md).
+The paper selects **`--weight-p 7` using validation AR1** and reports AR1/AR10/AR100.
 
 ## Training
 
-Run from the repository root. Examples explicitly set the paper's **batch size 2** (the code default is 4). Seeds 0, 1, 2 illustrate how to request three independent runs.
+Run from the repository root. 
 
 ### PN baseline
 
@@ -124,8 +113,6 @@ python train_pud_detr.py \
   --test-image-dir datasets/VOC2007/JPEGImages
 ```
 
-`--weight-p` is the paper's positive-risk scaling factor, distinct from `--focal-alpha`. For other VOC drops, change the training JSON and metadata label and use the validation-selected scale. The paper tunes this scale from 1–10; the value 8 below is specific to drop=0.7. `--drop-ratio` records metadata; it does not remove annotations at runtime. Use `pascal_train.json` for drop=0.0.
-
 Diatom training with the paper-selected scale:
 
 ```bash
@@ -139,50 +126,6 @@ python train_pud_detr.py \
   --trainval-image-dir datasets/diatom/images \
   --test-image-dir datasets/diatom/images
 ```
-
-For the diatom PN baseline, use `--method pn`, omit `--weight-p`/`--reduction`, and choose a different experiment name. For one run, replace `--seeds 0 1 2` with `--seed <integer>`.
-
-Training uses AdamW, transformer/backbone learning rates `1e-4`/`1e-5`, weight decay `1e-4`, gradient clipping `0.1`, 2,000 warm-up steps, cosine annealing, and no auxiliary decoder loss. Each epoch is evaluated on validation AP@[0.50:0.95]. The best-validation-AP checkpoint is evaluated on the test set. `--skip-test` enables validation-only runs without test paths.
-
-Outputs appear under `outputs/<experiment-name>/seed_<seed>/` (a suffix prevents overwriting): `config.json`, `metrics.csv`, `checkpoints/`, and `lightning_logs/`. Three-seed runs add `multi_seed_results.csv` with **validation AP** mean and population standard deviation; test metrics remain in individual run files.
-
-## Ablations
-
-Validation-only VOC positive-risk-scale selection:
-
-```bash
-python run_val_ablation.py \
-  --weight-p-values 1 2 3 4 5 6 7 8 9 10 \
-  --reductions global --seeds 0 1 2 \
-  --output-dir outputs/voc_drop07_selection \
-  --results-csv outputs/voc_drop07_selection/results.csv \
-  -- \
-  --device 0 --batch-size 2 \
-  --train-json datasets/VOC2007/coco_annotations/pascal_train_drop_0.7.json \
-  --val-json datasets/VOC2007/coco_annotations/pascal_val.json \
-  --trainval-image-dir datasets/VOC2007/JPEGImages
-```
-
-For the clamp ablation, use `--weight-p-values 8 --reductions global query_wise element_wise`. The runner forces 20 epochs and `--skip-test`; its CSV is for validation AP selection, not the paper's test tables or diatom AR1 selection. Evaluate test metrics with the main training entry point and test paths after choosing the setting.
-
-For weighted PN, use `train_pud_detr_negative_ablation.py` with the PN command above and add `--negative-weight 0.25` (also 0, 0.5, 0.75, or 1). Use a distinct experiment name per condition. In the preserved code, the multiplier applies to **every zero one-hot target position**, including non-target classes at matched queries. `1` recovers PN. The supplied manuscript reports AP **3.47 ± 0.13** for weight 0.
-
-## Reproducibility
-
-- Keep the committed annotation masks fixed across methods and training seeds; verify their SHA-256 values in the manifest.
-- Set `--batch-size 2` explicitly. The historical defaults of batch size 4 and `--weight-p 5` differ from the selected paper settings.
-- Save the Git commit, command, model revision, package versions, precision, hardware, per-seed configs, and metrics. `config.json` records arguments, dataset counts, selected checkpoint, and core package versions.
-- CUDA `grid_sample` backward is not strictly deterministic. `--deterministic` requests best-effort execution with warnings; seeds do not guarantee bitwise-identical GPU runs.
-- Code metrics use a 0–1 scale; multiply by 100 for the paper tables. Built-in aggregation uses population standard deviation (`ddof=0`) for validation AP only. The supplied manuscript does not specify the test-table standard-deviation convention.
-- The release preserves the experimental all-zero-one-hot PU mask, image-wise global clamp, and weighted-PN behavior. See [implementation details](docs/REPRODUCIBILITY.md) before claiming exact table reproduction.
-
-Run existing checks in the training environment:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Loss tests require the training dependencies and may be reported as skipped when these are absent.
 
 ## Citation
 
