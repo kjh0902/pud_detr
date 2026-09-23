@@ -4,8 +4,6 @@
 
 PUD-DETR integrates non-negative positive-unlabeled (nnPU) classification risk into Deformable DETR. With incomplete annotations, a real object may have no bounding-box label and receive incorrect background supervision. PUD-DETR treats query–class entries without observed positive assignments as unlabeled and reconstructs their negative risk, while retaining Hungarian matching and bounding-box regression.
 
-`main` contains the paper implementation preserved from `codex/nnpu-val-ablation`, commit [`a6278fa`](https://github.com/kjh0902/pud_detr/commit/a6278fa9cd5fbddef3d807edcd80a2a56313b14d). The release cleanup changes documentation and tracked assets, not the experimental Python code or dependency pins.
-
 ![Examples of incomplete diatom annotations](figures/intro_diatom.png)
 
 Available annotations (left) and additional visible diatom instances (right), illustrating missing labels.
@@ -16,35 +14,22 @@ The paper reports three-seed experiments on PASCAL VOC 2007 and an inherently in
 
 ![VOC AP and AR1 across configured annotation drop ratios](figures/experiment_result.png)
 
-The supplied paper figure uses a 0–1 metric scale. The benefit depends on annotation omission and the evaluation metric.
-
 ## Repository structure
 
 ```text
 .
 ├── train_pud_detr.py                    # PN baseline and PUD-DETR
-├── train_pud_detr_negative_ablation.py  # Pairwise negative-loss weighting control
-├── run_val_ablation.py                 # Validation-only weight_p / clamp sweeps
 ├── requirements.txt                    # Preserved experimental dependency pins
 ├── scripts/
-│   ├── drop_voc_instances.py            # Constrained training-box removal
-│   ├── convert_voc_to_coco.py           # VOC XML → COCO JSON
-│   └── gpu_selection.py                # Device selection / determinism helpers
-├── tests/                              # Data, loss, device, and runner checks
+│   └── drop_voc_instances.py            # Constrained training-box removal
 ├── datasets/
 │   ├── VOC2007/coco_annotations/        # Complete splits + drop=0.1 through 0.7
 │   └── diatom/                         # Experiment train/val/test COCO annotations
-├── figures/                            # Five supplied paper figures
-└── docs/
-    ├── REPRODUCIBILITY.md
-    └── annotation_manifest.json         # Annotation counts and SHA-256 hashes
 ```
-
-Raw images, generated XML variants, checkpoints, logs, caches, and temporary files are excluded from Git. Released annotations are ordinary Git files; Git LFS is not required.
 
 ## Environment / dependencies
 
-The preserved requirements use CUDA 12.6 PyTorch wheels. Use a Linux environment with a compatible NVIDIA GPU/driver for training; GPU selection was developed for an RTX 3090 setup. The original Python interpreter version is not recorded. Python 3.12 is a setup starting point, not a claim about the original interpreter.
+The preserved requirements use CUDA 12.6 PyTorch wheels. Use a Linux environment with a compatible NVIDIA GPU/driver for training. 
 
 ```bash
 git clone https://github.com/kjh0902/pud_detr.git
@@ -54,27 +39,11 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Key pins are PyTorch `2.13.0+cu126`, torchvision `0.28.0+cu126`, PyTorch Lightning `2.6.5`, Transformers `4.44.2`, timm `1.0.28`, and pycocotools `2.0.11`. See [requirements.txt](requirements.txt) for the complete snapshot. These pins are preserved from the experiment branch; the release cleanup did not reinstall or revalidate the complete GPU environment.
-
-The default pretrained model is `SenseTime/deformable-detr` on Hugging Face. Initial loading requires access to its files. Use `--hf-revision <commit>` to pin a model revision and `--local-files-only` once the required files are cached. The original pretrained revision is not supplied.
-
-Examples use Bash syntax. `--device 0` selects physical GPU 0 before importing PyTorch. Precision defaults to `32-true`; `--precision 16-mixed` is supported but should match the run being reproduced.
-
 ## Dataset preparation
 
 ### PASCAL VOC 2007
 
-Obtain the VOC2007 train/validation and test data from the [PASCAL VOC 2007 project](http://host.robots.ox.ac.uk/pascal/VOC/voc2007/), following its access and use conditions. Place the real JPEG files from both archives in this layout:
-
-```text
-datasets/VOC2007/
-├── JPEGImages/          # Download train, validation, and test images separately
-├── Annotations/         # Original XMLs; only needed for optional regeneration
-├── ImageSets/Main/      # Original split files; only needed for optional regeneration
-└── coco_annotations/    # Included in this repository
-```
-
-Training consumes the committed JSON files and JPEGs directly. Separate test images can instead be supplied with `--test-image-dir`. The released splits contain **2,501 train / 2,510 validation / 4,952 test** images, with no shared filenames between splits. Category IDs are contiguous **0–19**. Boxes use COCO zero-based `[x, y, width, height]`; `file_name` identifies an image relative to its image directory.
+Obtain the VOC2007 train/validation and test data from the [PASCAL VOC 2007 project](http://host.robots.ox.ac.uk/pascal/VOC/voc2007/), following its access and use conditions. 
 
 ### Drop-ratio annotations
 
@@ -89,9 +58,9 @@ Use the committed files directly to preserve the supplied experimental masks. Va
 | 0.4 | `pascal_train_drop_0.4.json` | 4,706 | 0.400051 |
 | 0.5 | `pascal_train_drop_0.5.json` | 3,922 | 0.500000 |
 | 0.6 | `pascal_train_drop_0.6.json` | 3,138 | 0.599949 |
-| 0.7 | `pascal_train_drop_0.7.json` | 2,501 | **0.681158** |
+| 0.7 | `pascal_train_drop_0.7.json` | 2,501 | 0.681158 |
 
-Each incomplete training file retains the same 2,501 images and at least one box per image. Configured drop=0.7 reaches the maximum feasible removal of 5,343 / 7,844 boxes (about 68.12%). The filename and paper's configured label remain 0.7. Validation has 7,818 boxes and test has 14,976 boxes. Counts and hashes are recorded in [the annotation manifest](docs/annotation_manifest.json).
+Each incomplete training file retains the same 2,501 images and at least one box per image. Configured drop=0.7 reaches the maximum feasible removal of 5,343 / 7,844 boxes (about 68.12%). 
 
 ![Illustration of training annotation removal](figures/experiment_pascal_drop.png)
 
