@@ -1,3 +1,0 @@
-# Preserve released annotation bytes and SHA-256 hashes on every platform.
-datasets/VOC2007/coco_annotations/*.json -text
-datasets/diatom/*.json -text
