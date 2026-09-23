@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 """Convert PASCAL VOC 2007 XML annotations to PUD-DETR COCO JSON files.
-
-The conversion intentionally mirrors the annotation representation used by
-jiseokson/PUD-DETR while keeping annotation IDs unique for pycocotools and the
-validation performed by ``train_pud_detr.py``.
 """
 
 from __future__ import annotations
