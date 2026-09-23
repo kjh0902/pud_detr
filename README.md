@@ -22,9 +22,9 @@ The paper reports three-seed experiments on PASCAL VOC 2007 and an inherently in
 ├── requirements.txt                    # Preserved experimental dependency pins
 ├── scripts/
 │   └── drop_voc_instances.py            # Constrained training-box removal
-├── datasets/
-│   ├── VOC2007/coco_annotations/        # Complete splits + drop=0.1 through 0.7
-│   └── diatom/                         # Experiment train/val/test COCO annotations
+└── datasets/
+    ├── VOC2007/coco_annotations/        # Complete splits + drop=0.1 through 0.7
+    └── diatom/                         # Experiment train/val/test COCO annotations
 ```
 
 ## Environment / dependencies
