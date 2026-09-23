@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
 """Train and evaluate the historical PUD-DETR implementation.
-
-This script consolidates the standalone experiment files in
-``pu_pascal_07_tuning`` and ``pu_pascal_07_tuning_with_rewrite`` into one
-reproducible entry point.  One invocation represents one method, one training
-annotation file, and one random seed.
-
-The implementation intentionally preserves the historical PU target mask:
-every zero entry in the one-hot class target contributes to the unlabeled
-negative-risk term.  ``weight_p`` is the scaling factor alpha described in the
-paper.  The positive-as-negative focal term uses the corrected modulation from
-``pu_pascal_07_tuning_with_rewrite/train.py``.
 """
 
 from __future__ import annotations
