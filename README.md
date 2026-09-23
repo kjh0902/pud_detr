@@ -18,12 +18,14 @@ The paper reports three-seed experiments on PASCAL VOC 2007 and an inherently in
 
 ```text
 .
-├── train_pud_detr.py                    # PN baseline and PUD-DETR
+├── train_pud_detr.py                   # PN baseline and PUD-DETR
 ├── requirements.txt                    # Preserved experimental dependency pins
 ├── scripts/
-│   └── drop_voc_instances.py            # Constrained training-box removal
+│   ├── gpu_selection.py                # GPU/device configuration
+│   ├── convert_voc_to_coco.py          # VOC-to-COCO conversion
+│   └── drop_voc_instances.py           # Training-box removal
 └── datasets/
-    ├── VOC2007/coco_annotations/        # Complete splits + drop=0.1 through 0.7
+    ├── VOC2007/coco_annotations/       # Complete splits + drop=0.1 through 0.7
     └── diatom/                         # Experiment train/val/test COCO annotations
 ```
 
