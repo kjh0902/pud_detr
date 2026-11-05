@@ -1224,7 +1224,7 @@ def write_multi_seed_csv(
     path.parent.mkdir(parents=True, exist_ok=True)
     validation_aps = [float(result["best_validation_ap"]) for result in results]
     validation_ap_mean = float(np.mean(validation_aps))
-    validation_ap_std = float(np.std(validation_aps))
+    validation_ap_std = float(np.std(validation_aps, ddof=1))
     with path.open("w", encoding="utf-8", newline="") as handle:
         fieldnames = (
             "record_type",
